@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[18]:
+# In[33]:
 
 
 # imports
@@ -16,13 +16,14 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
 
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
 
-# In[10]:
+# In[24]:
 
 
 # Data ingestion, through wikipedia
@@ -31,7 +32,7 @@ docs = loader.load()
 docs
 
 
-# In[11]:
+# In[25]:
 
 
 # text splitting the docs for better embedding and context retrieval
@@ -40,7 +41,7 @@ split_docs = text_splitter.split_documents(docs)
 split_docs
 
 
-# In[12]:
+# In[26]:
 
 
 # embedding the documents using huggingface embeddings (open source free)
@@ -48,7 +49,7 @@ embedding = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 embedding
 
 
-# In[13]:
+# In[27]:
 
 
 # creating chroma db from the split docs
@@ -57,7 +58,7 @@ retriever = vectorstore.as_retriever()
 retriever
 
 
-# In[14]:
+# In[28]:
 
 
 # defining a llm
@@ -68,7 +69,47 @@ llm = ChatGroq(
 llm
 
 
-# In[ ]:
+# In[34]:
+
+
+# creating a history aware retriever
+retriever_system_prompt = """
+You are a query rewriter for a Deep Learning question-answering system.
+Your ONLY job is to take the conversation so far and the user's latest message, and produce a single, clear standalone search query that can be used to look up relevant passages in a Deep Learning reference article.
+
+The assistant downstream will answer the question; you must NOT answer it yourself.
+You only rewrite the query.
+
+Use these rules:
+1. Incorporate context from the chat history.
+2. If the latest user message uses pronouns or vague references (e.g., “it”, “that”, “the first one”), rewrite it so that it explicitly mentions the Deep Learning concept being discussed (e.g., “backpropagation”, “convolutional neural networks”, “transformers”, “SGD”, etc.).
+3. Focus on Deep Learning and closely related neural-network topics only.
+4. If the user asks about something clearly unrelated to Deep Learning (for example: recipes, travel, sports, general life advice), output exactly the string:
+   NO_DEEP_LEARNING_QUERY and nothing else.
+5. Do not include chit-chat or extra wording.
+6. The output should be a short, precise query that would work well for semantic search over a Deep Learning article.
+7. Do NOT include phrases like “User asked:” or “The query is:”. Just output the query text itself.
+8. Never mention that you are rewriting a query.
+9. The downstream system only wants the final rewritten query.
+
+You will receive:
+1. hat_history: the prior conversation between the user and the assistant
+2. input: the user's latest message
+
+Using the chat_history and input, write a single standalone Deep Learning search query, or NO_DEEP_LEARNING_QUERY if the request is off-topic.
+"""
+
+history_retriever_prompt = ChatPromptTemplate.from_messages([
+    ("system", retriever_system_prompt),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+])
+
+# here the llm redefines the user query based on chat history before passing it to the retriever
+history_aware_retriever = create_history_aware_retriever(llm, retriever, history_retriever_prompt)
+
+
+# In[35]:
 
 
 # creating a prompt template for context with chat history
@@ -97,7 +138,7 @@ prompt_template = ChatPromptTemplate.from_messages([
 prompt_template
 
 
-# In[21]:
+# In[30]:
 
 
 #@@ building the rag_chain
@@ -111,58 +152,36 @@ document_chain
 # In[ ]:
 
 
+# creating a retreival chain
+rag_chain = create_retrieval_chain(history_aware_retriever, document_chain)
+rag_chain
+
+
+# In[ ]:
+
+
 def chatbot():
     chat_history = []
 
     print("GenAI chatbot is ready! You can now ask questions about Deep Learning.")
     user_input = input("\nUser:\n")
     while user_input.lower() not in ["exit", "quit"]:
-        response = document_chain.invoke({
-            "context": retriever.invoke(user_input),
+        response = rag_chain.invoke({
             "history": chat_history,
             "input": user_input
         })
+        answer = response["answer"]
 
         chat_history.extend([
             HumanMessage(content=user_input),
-            AIMessage(content=response)
+            AIMessage(content=answer)
         ])
 
-        print(f"\nAI:\n{response}\n")
+        print(f"\nAI:\n{answer}\n")
         user_input = input("User:\n")
 
 if __name__ == "__main__":
     chatbot()
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
 
 
 # In[ ]:
